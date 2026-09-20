@@ -1,0 +1,2222 @@
+{
+  "name": "Regional D2C & Retail Brands PP- 1",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "Single workflow, two waits (15min, 4h). Raw-body HMAC (not JSON.stringify).\nReal consent check (opt_in AND NOT opt_out), not just phone-exists.\nCoupon is only ever created in the SECOND-TOUCH branch — structurally\nunreachable from first touch. Coupon is a REAL Shopify discount code (GraphQL discountCodeBasicCreate) \nnot a random string. Every external call has retry +\nerror-output routed to a failure-recording node, never a silent stop.",
+        "height": 200,
+        "width": 680,
+        "color": 7
+      },
+      "id": "24c82fdb-d883-4f03-8a01-cc5b985062c2",
+      "name": "ARCHITECTURE NOTE",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1808,
+        2240
+      ]
+    },
+    {
+      "parameters": {
+        "content": "Raw body HMAC verification, field validation, idempotency check —\nall before the 15-minute wait and before anything is sent.",
+        "height": 140,
+        "width": 620,
+        "color": 5
+      },
+      "id": "ca97d8f6-2ae9-4bc6-9559-f820fc7a81ad",
+      "name": "1. INTAKE + VERIFY + DEDUP",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        464,
+        2560
+      ]
+    },
+    {
+      "parameters": {
+        "content": "Order status re-checked against the live Shopify checkout (not the\nstale webhook payload). Real consent check, not phone-exists.",
+        "height": 140,
+        "width": 620,
+        "color": 4
+      },
+      "id": "d8432b05-755a-46cb-95d6-06ed3002ba99",
+      "name": "2. WAIT 15 MIN → RE-CHECK → ELIGIBILITY",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1376,
+        2560
+      ]
+    },
+    {
+      "parameters": {
+        "content": "Deterministic branch on payment_method (config-driven COD gateway\nlist, not hard-coded). Product image fetched from Shopify Admin API —\nthe checkout webhook payload does not include it.",
+        "height": 140,
+        "width": 680,
+        "color": 6
+      },
+      "id": "c4ab86f0-7ffd-4c02-9c92-0d2dc6ff606c",
+      "name": "3. FIRST TOUCH — PAYMENT LINK OR COD MESSAGE",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2272,
+        2560
+      ]
+    },
+    {
+      "parameters": {
+        "content": "Coupon is only reachable here. Real price-rule + discount-code\ncreation in Shopify, not a locally-generated string.",
+        "height": 140,
+        "width": 680,
+        "color": 3
+      },
+      "id": "02626442-a8e4-44d4-9a82-f0916a58c92f",
+      "name": "4. WAIT 4H → RE-CHECK → SECOND TOUCH (COUPON)",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3168,
+        2560
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cart/abandoned",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "c0542c0a-027e-4ea7-9e8a-cde7b142d3f6",
+      "name": "Cart Abandoned Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        496,
+        2848
+      ],
+      "webhookId": "7c27db8a-0851-4afe-9844-06f5dfc90905"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\n// CRITICAL FIX: HMAC must be computed over the exact raw body bytes Shopify\n// sent, not JSON.stringify(parsedBody) — re-serializing can change key order,\n// whitespace, and number formatting, silently breaking every signature check.\n// With webhook option rawBody:true, the untouched body is available as a\n// binary buffer on the item.\nconst rawBuffer = $input.item.binary?.data ? Buffer.from($input.item.binary.data.data, 'base64') : Buffer.from('');\nconst rawString = rawBuffer.toString('utf8');\nconst hmacHeader = $input.item.json.headers['x-shopify-hmac-sha256'] || '';\nconst digest = crypto.createHmac('sha256', $env.SHOPIFY_WEBHOOK_SECRET).update(rawBuffer).digest('base64');\n\n// Timing-safe comparison — a plain === leaks timing information about how\n// many leading bytes matched, which a plain string compare does not protect against.\nfunction timingSafeEqual(a, b) {\n  const bufA = Buffer.from(a); const bufB = Buffer.from(b);\n  if (bufA.length !== bufB.length) return false;\n  return crypto.timingSafeEqual(bufA, bufB);\n}\nconst valid = hmacHeader.length > 0 && timingSafeEqual(hmacHeader, digest);\n\nlet parsed = {};\ntry { parsed = JSON.parse(rawString); } catch (e) {}\nreturn { json: { valid, raw_body: rawString, parsed } };"
+      },
+      "id": "ff0aa519-bbfb-4ee1-a61a-ee904fd7715f",
+      "name": "Verify Shopify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        704,
+        2848
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO cartrecovery.webhook_events (source, event_id, signature_valid, raw_body) VALUES ('shopify_checkout', $1, $2, $3);",
+        "options": {
+          "queryReplacement": "={{ [$json.parsed.token || $json.parsed.id, $json.valid, $json.raw_body] }}"
+        }
+      },
+      "id": "331e66c9-37cf-4f0c-8535-4a648d42eef4",
+      "name": "Log Webhook Event",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        928,
+        2848
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "6a9b5e0b-11b1-4a85-99d4-9ad2e22e9120",
+      "name": "Signature Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        2848
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'invalid signature' } }}",
+        "options": {}
+      },
+      "id": "09c10ce9-af4f-484f-9df7-b42c3ed620b9",
+      "name": "Reject Invalid Signature (401)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        3040
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $('Verify Shopify Signature').item.json.parsed;\nconst codNames = ($env.COD_GATEWAY_NAMES || 'cash_on_delivery,cod,manual').split(',').map(s => s.trim().toLowerCase());\nconst gateway = (raw.gateway || raw.payment_gateway_names?.[0] || '').toLowerCase();\nconst paymentMethod = codNames.some(n => gateway.includes(n)) ? 'cod' : 'online';\nreturn { json: {\n  checkout_token: raw.token || raw.id,\n  customer_phone_raw: raw.customer?.phone || raw.phone || raw.shipping_address?.phone || null,\n  customer_email: raw.email || raw.customer?.email || null,\n  customer_name: raw.customer?.first_name || raw.billing_address?.first_name || null,\n  shopify_customer_id: raw.customer?.id || null,\n  // FIX (audit #1): capture the only real consent signal Shopify's checkout payload\n  // carries. This is a MARKETING opt-in checkbox, not a WhatsApp-specific one —\n  // see the delivery doc's honest caveat on this. If the business has a separate,\n  // dedicated WhatsApp opt-in flow, that should write to customers.whatsapp_opt_in\n  // directly instead of relying on this field alone.\n  buyer_accepts_marketing: raw.buyer_accepts_marketing === true,\n  payment_method: paymentMethod,\n  cart_value: parseFloat(raw.total_price || '0'),\n  currency: raw.currency || 'INR',\n  line_items: raw.line_items || [],\n  checkout_url: raw.abandoned_checkout_url || null\n} };"
+      },
+      "id": "6f4f3f6a-1322-450b-a0e9-f221be53c6c3",
+      "name": "Normalize Cart + Customer Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1376,
+        2848
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const j = $json;\nlet phone = (j.customer_phone_raw || '').replace(/[^0-9+]/g, '');\nif (phone && !phone.startsWith('+')) phone = '+91' + phone.replace(/^0+/, '');\nconst phoneValid = /^\\+[1-9]\\d{7,14}$/.test(phone);\nconst required_ok = !!j.checkout_token && j.cart_value > 0 && j.line_items.length > 0;\nreturn { json: { ...j, customer_phone: phoneValid ? phone : null, phone_valid: phoneValid, valid: required_ok } };"
+      },
+      "id": "32df5a4b-e168-4dcb-89e0-66963837944b",
+      "name": "Validate Required Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        1584,
+        2848
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "072a817d-de4c-4e02-9c61-c8ab8a48d431",
+      "name": "Fields Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1808,
+        2848
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'missing or invalid required fields' } }}",
+        "options": {}
+      },
+      "id": "e768a929-f451-46a9-b809-b2898c7807c3",
+      "name": "Respond 400 (Invalid Fields)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1808,
+        3040
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO cartrecovery.idempotency_keys (idempotency_key) VALUES ($1) ON CONFLICT DO NOTHING RETURNING idempotency_key;",
+        "options": {
+          "queryReplacement": "={{ [$json.checkout_token] }}"
+        }
+      },
+      "id": "294e3646-9108-4abd-ad1e-261b23e1e250",
+      "name": "Check Cart Idempotency",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2032,
+        2848
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "83bb76d8-0399-42e6-b796-c091afdc58b7",
+      "name": "New Cart?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2256,
+        2848
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'duplicate_ignored' } }}",
+        "options": {}
+      },
+      "id": "a2bbc9ff-9daa-4830-9e89-f068cb71d0bd",
+      "name": "Respond 200 (Duplicate, Ignored)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2256,
+        3040
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO cartrecovery.customers (shopify_customer_id, phone_e164, name, email, whatsapp_opt_in) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (phone_e164) DO UPDATE SET name = COALESCE(cartrecovery.customers.name, EXCLUDED.name), email = COALESCE(cartrecovery.customers.email, EXCLUDED.email), whatsapp_opt_in = cartrecovery.customers.whatsapp_opt_in OR EXCLUDED.whatsapp_opt_in RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$('Validate Required Fields').item.json.shopify_customer_id, $('Validate Required Fields').item.json.customer_phone, $('Validate Required Fields').item.json.customer_name, $('Validate Required Fields').item.json.customer_email, $('Normalize Cart + Customer Data').item.json.buyer_accepts_marketing] }}"
+        }
+      },
+      "id": "1fc2573b-59a8-4d2b-9525-ec3bbd7fdc4a",
+      "name": "Upsert Customer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2464,
+        2848
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO cartrecovery.carts (checkout_token, customer_id, cart_value, currency, payment_method_hint, line_items, checkout_url) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$('Validate Required Fields').item.json.checkout_token, $json[0].id, $('Validate Required Fields').item.json.cart_value, $('Validate Required Fields').item.json.currency, $('Validate Required Fields').item.json.payment_method, JSON.stringify($('Validate Required Fields').item.json.line_items), $('Validate Required Fields').item.json.checkout_url] }}"
+        }
+      },
+      "id": "e940bce9-271a-496f-a725-a9dd50b67105",
+      "name": "Insert Cart",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2688,
+        2848
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO cartrecovery.recovery_attempts (cart_id, customer_id, customer_phone, customer_name, payment_method, cart_value, status) VALUES ($1,$2,$3,$4,$5,$6,'pending') RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$json[0].id, $('Upsert Customer').item.json[0].id, $('Validate Required Fields').item.json.customer_phone, $('Validate Required Fields').item.json.customer_name, $('Validate Required Fields').item.json.payment_method, $('Validate Required Fields').item.json.cart_value] }}"
+        }
+      },
+      "id": "60fdf236-cb51-4c16-9515-cafc8ce0ee08",
+      "name": "Create Recovery Attempt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2912,
+        2848
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'accepted', recovery_attempt_id: $json[0].id } }}",
+        "options": {}
+      },
+      "id": "d2b36b75-3948-4cc3-a8e3-e876a4134713",
+      "name": "Respond 200 Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        3136,
+        2848
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "minutes"
+      },
+      "id": "57aad9df-6eb9-4668-ab1f-5cab0a69bb43",
+      "name": "Wait 15 Minutes",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3344,
+        2848
+      ],
+      "webhookId": "ba7467cb-5c84-4cf4-adb4-92bf4f1c2495"
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "url": "={{ $env.SHOPIFY_STORE_URL }}/admin/api/2026-01/checkouts/{{ $('Validate Required Fields').item.json.checkout_token }}.json",
+        "options": {}
+      },
+      "id": "0621aab3-5c1e-4ec4-a2eb-06438c189b81",
+      "name": "Check Order Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        3568,
+        2848
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "72c557a5-81c5-42b0-aa31-db53081f5e1c",
+      "name": "Already Purchased?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        3792,
+        2848
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'recovered', recovered_at = now(), order_id_if_recovered = $2, updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id, $json.checkout?.order_id || null] }}"
+        }
+      },
+      "id": "cd6b8a8c-c8e7-4990-9eeb-b78917b6c73d",
+      "name": "Mark Recovered (Purchased Before First Touch)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4016,
+        2736
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT whatsapp_opt_in, whatsapp_opt_out, phone_e164 FROM cartrecovery.customers WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Upsert Customer').item.json[0].id] }}"
+        }
+      },
+      "id": "63df7a34-7d21-4814-8b89-dfb9ae1a42df",
+      "name": "Check WhatsApp Eligibility",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4016,
+        2928
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Real eligibility, not just phone-exists: a valid phone AND explicit\n// opt-in AND no opt-out on file. Missing opt_in defaults to ineligible —\n// never message on the strength of 'we have a number'.\nconst c = $json[0] || {};\nlet eligible = true, reason = null;\nif (!c.phone_e164) { eligible = false; reason = 'no_phone'; }\nelse if (c.whatsapp_opt_out) { eligible = false; reason = 'opted_out'; }\nelse if (!c.whatsapp_opt_in) { eligible = false; reason = 'no_opt_in_on_file'; }\nreturn { json: { eligible, reason } };"
+      },
+      "id": "165a54bd-b4b6-4d3d-b906-16cc923d452e",
+      "name": "Eligible?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        4224,
+        2928
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "0c528fe0-6f20-43ec-aab7-b926828e2f76",
+      "name": "Eligible? (branch)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        4448,
+        2928
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = $2, failure_reason = $3, updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id, $json.reason === 'opted_out' ? 'ineligible_opted_out' : 'ineligible_no_phone', $json.reason] }}"
+        }
+      },
+      "id": "520dcf5d-712c-44f6-bc58-e65d0bba1a1e",
+      "name": "Mark Ineligible / Suppressed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4672,
+        3040
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "ba3a97f2-4fca-4031-95c5-0aa7c3f7fb72",
+      "name": "Branch Payment Method",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        4672,
+        2848
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "url": "https://api.razorpay.com/v1/payment_links",
+        "options": {}
+      },
+      "id": "70718617-4564-4087-a914-74e34333b9f7",
+      "name": "Generate Razorpay Payment Link",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        4896,
+        2720
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO cartrecovery.payment_attempts (recovery_attempt_id, provider_ref_id, amount, status) VALUES ($1,$2,$3,'created'); UPDATE cartrecovery.recovery_attempts SET payment_link = $4 WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id, $json.id, $('Validate Required Fields').item.json.cart_value, $json.short_url] }}"
+        }
+      },
+      "id": "6aa511ec-59e5-4685-bb89-ba6a2fb8a8e6",
+      "name": "Record Payment Attempt",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        5104,
+        2720
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "url": "={{ $env.SHOPIFY_STORE_URL }}/admin/api/2026-01/products/{{ $('Validate Required Fields').item.json.line_items[0].product_id }}/images.json",
+        "options": {}
+      },
+      "id": "d7aff30c-3df0-434d-a899-82b985a7c7b6",
+      "name": "Fetch Product Image (Primary Line Item)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        4896,
+        2960
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// PRODUCT REPRESENTATION CHOICE: with multiple line items, this uses the\n// FIRST (primary) product's image and name, and appends '+ N more item(s)'\n// to the body text rather than trying to render a multi-image carousel —\n// WhatsApp template headers support exactly one media item, so a single\n// deterministic 'primary product' representation is the only reliable choice\n// that works inside an approved template.\nconst cart = $('Validate Required Fields').item.json;\nconst items = cart.line_items;\nconst primary = items[0];\nconst extraCount = items.length - 1;\nconst imageResult = $('Fetch Product Image (Primary Line Item)').item.json;\nconst imageUrl = imageResult?.images?.[0]?.src || null;\nreturn { json: { ...cart, message_kind: 'first_touch_payment',\n  product_name: primary.title + (extraCount > 0 ? ` (+${extraCount} more item${extraCount > 1 ? 's' : ''})` : ''),\n  quantity: primary.quantity, price: primary.price, product_image_url: imageUrl,\n  payment_link: $('Record Payment Attempt').item.json?.payment_link || null } };"
+      },
+      "id": "777dc153-bfbe-46b4-b553-85a21ed2bbd4",
+      "name": "Build Payment Recovery Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        5328,
+        2848
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cart = $('Validate Required Fields').item.json;\nconst items = cart.line_items;\nconst primary = items[0];\nconst extraCount = items.length - 1;\nreturn { json: { ...cart, message_kind: 'first_touch_cod',\n  product_name: primary.title + (extraCount > 0 ? ` (+${extraCount} more item${extraCount > 1 ? 's' : ''})` : ''),\n  quantity: primary.quantity, price: primary.price, product_image_url: null } };"
+      },
+      "id": "b880c8ca-1d38-44fc-b1cb-3709c7509e90",
+      "name": "Build COD Recovery Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        4896,
+        3168
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "url": "={{ $env.SHOPIFY_STORE_URL }}/admin/api/2026-01/products/{{ $('Validate Required Fields').item.json.line_items[0].product_id }}/images.json",
+        "options": {}
+      },
+      "id": "a20d978c-38a0-4474-b003-9342a2cf8183",
+      "name": "Fetch Product Image (COD)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        5104,
+        3168
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const msg = $('Build COD Recovery Message').item.json;\nconst imageUrl = $json?.images?.[0]?.src || null;\nreturn { json: { ...msg, product_image_url: imageUrl } };"
+      },
+      "id": "ac6e0d29-4d9b-4b8f-8f54-5e975a44c057",
+      "name": "Merge Image Into COD Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        5328,
+        3168
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "YOUR_WHATSAPP_PHONE_NUMBER_ID",
+        "recipientPhoneNumber": "={{ $json.customer_phone }}",
+        "messageType": "template"
+      },
+      "id": "a4797bfc-9dbd-41c2-be0f-64fc312d2aa1",
+      "name": "Send WhatsApp First Touch",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [
+        5552,
+        3008
+      ],
+      "webhookId": "7e01f467-2b41-4ac6-8156-75df227b8b6a"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'first_touch_sent', first_touch_at = now(), updated_at = now() WHERE id = $1; INSERT INTO cartrecovery.recovery_messages (recovery_attempt_id, message_kind, provider_message_id, status) VALUES ($1,$2,$3,'sent');",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id, $json.message_kind, $json.messages?.[0]?.id || null] }}"
+        }
+      },
+      "id": "14b74e40-40f5-43ac-8611-867f2df8ee73",
+      "name": "Mark First Touch Sent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        5776,
+        3008
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'failed', failure_reason = 'whatsapp_send_failed', updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id] }}"
+        }
+      },
+      "id": "4aaa9896-cb52-4724-a943-69ac41e5ce72",
+      "name": "Record Send Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        5776,
+        3200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 4,
+        "unit": "hours"
+      },
+      "id": "8c5450a6-1c03-44e9-b74b-7686c3f79ef9",
+      "name": "Wait 4 Hours",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        5984,
+        3008
+      ],
+      "webhookId": "085e5950-898a-4b76-8d4b-8356bb0b8fe3"
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "url": "={{ $env.SHOPIFY_STORE_URL }}/admin/api/2026-01/checkouts/{{ $('Validate Required Fields').item.json.checkout_token }}.json",
+        "options": {}
+      },
+      "id": "f4fb90c4-e305-4069-8307-7ab8ca1a4b7c",
+      "name": "Re-check Order Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        6208,
+        3008
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "f3bb97ea-2584-454c-9bf4-9fdd68dd0bb0",
+      "name": "Purchased? (2nd check)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        6432,
+        3008
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'recovered', recovered_at = now(), order_id_if_recovered = $2, updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id, $json.checkout?.order_id || null] }}"
+        }
+      },
+      "id": "d1bf4a7a-6e54-43ba-9242-2fd6c1614c7a",
+      "name": "Mark Recovered",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        6656,
+        2896
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const method = $('Validate Required Fields').item.json.payment_method;\nconst enabled = method === 'cod' ? ($env.COUPON_ENABLED_FOR_COD !== 'false') : ($env.COUPON_ENABLED_FOR_ONLINE !== 'false');\nreturn { json: { enabled } };"
+      },
+      "id": "00f15a6a-33ba-4f82-bcbb-1a0baa3d96fa",
+      "name": "Coupon Enabled For This Method?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        6656,
+        3104
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "f68fccc7-d65b-4ee7-821f-2d6181b247df",
+      "name": "Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        6864,
+        3104
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'closed_no_purchase', updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id] }}"
+        }
+      },
+      "id": "803e2b21-5dd7-4b29-b2ce-5603ff80e589",
+      "name": "Mark Closed (No Coupon Configured)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        7088,
+        3280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT coupon_code FROM cartrecovery.coupon_offers WHERE recovery_attempt_id = $1 AND status = 'active';",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id] }}"
+        }
+      },
+      "id": "3339b77c-6973-4ec5-9400-3921b158c405",
+      "name": "Check Existing Coupon",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        7088,
+        2928
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "c0096119-fb89-4050-b288-ce7230ab5c10",
+      "name": "Coupon Already Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        7312,
+        2928
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return { json: { ...$('Validate Required Fields').item.json, message_kind: 'second_touch_coupon', coupon_code: $json[0].coupon_code } };"
+      },
+      "id": "d44ef6ca-02ef-4315-b4c9-ab7ca184c4a2",
+      "name": "Reuse Existing Coupon",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        7536,
+        2864
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "url": "={{ $env.SHOPIFY_STORE_URL }}/admin/api/2026-01/graphql.json",
+        "options": {}
+      },
+      "id": "0dada478-ccad-4b11-ad18-c72aad650d53",
+      "name": "Create Shopify Discount Code (GraphQL, 5% off)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        7088,
+        3104
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "9d7b4f47-46a9-4f1c-b4ce-5083e863e25b",
+      "name": "Discount Created (No Errors)?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        7312,
+        3104
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO cartrecovery.coupon_offers (recovery_attempt_id, coupon_code, discount_pct, shopify_price_rule_id, shopify_discount_code_id, usage_limit, expires_at) VALUES ($1,$2,5.0,$3,$3,1,$4);",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id, $json.data.discountCodeBasicCreate.codeDiscountNode.codeDiscount.codes.nodes[0].code, $json.data.discountCodeBasicCreate.codeDiscountNode.id, new Date(Date.now() + (parseInt($env.COUPON_VALIDITY_HOURS || '48')) * 3600000).toISOString()] }}"
+        }
+      },
+      "id": "d40d477c-7c0a-43ad-b235-cc0d2024dd90",
+      "name": "Store Coupon Offer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        7536,
+        3104
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const cart = $('Validate Required Fields').item.json;\nreturn { json: { ...cart, message_kind: 'second_touch_coupon', coupon_code: $json.data.discountCodeBasicCreate.codeDiscountNode.codeDiscount.codes.nodes[0].code } };"
+      },
+      "id": "69f2c95c-3b5f-47e7-b4c0-dbf093043cfa",
+      "name": "Build Coupon Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        7744,
+        3104
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "send",
+        "phoneNumberId": "YOUR_WHATSAPP_PHONE_NUMBER_ID",
+        "recipientPhoneNumber": "={{ $json.customer_phone }}",
+        "messageType": "template"
+      },
+      "id": "2563e70a-26be-4d86-95c3-e431402b89a5",
+      "name": "Send Coupon WhatsApp",
+      "type": "n8n-nodes-base.whatsApp",
+      "typeVersion": 1,
+      "position": [
+        7968,
+        3104
+      ],
+      "webhookId": "69ea7c5d-d186-414d-b628-73afff1e3526"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'coupon_sent', second_touch_at = now(), coupon_code = $2, updated_at = now() WHERE id = $1; INSERT INTO cartrecovery.recovery_messages (recovery_attempt_id, message_kind, provider_message_id, status) VALUES ($1,'second_touch_coupon',$3,'sent');",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id, $('Build Coupon Message').item.json.coupon_code, $json.messages?.[0]?.id || null] }}"
+        }
+      },
+      "id": "9c1a02b7-05eb-4221-a904-46c46f209a2f",
+      "name": "Mark Coupon Sent (Final State)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        8192,
+        3104
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'failed', failure_reason = 'coupon_whatsapp_send_failed', updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id] }}"
+        }
+      },
+      "id": "5e534f4a-fbd9-4073-8464-f8bc024e109d",
+      "name": "Record Coupon Send Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        7968,
+        3296
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'failed', failure_reason = 'shopify_price_rule_creation_failed', updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Create Recovery Attempt').item.json[0].id] }}"
+        }
+      },
+      "id": "0c517860-3c4f-4bac-a74b-5fde72fed0f0",
+      "name": "Record Coupon Creation Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        7312,
+        3296
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "A Razorpay Payment Link is a generic payment collection — completing it\ndoes NOT automatically create a order or mark the Shopify checkout\ncompleted. Without this workflow, a customer who pays through the link\nkeeps getting the 4h coupon anyway, because WF-01's order-status checks\nonly ever look at Shopify, which never learns the payment happened.\nThis is the one genuinely required second workflow — not a pattern split.",
+        "height": 220,
+        "width": 680,
+        "color": 3
+      },
+      "id": "9770ccbc-21ff-42fa-a25b-bddf8222840e",
+      "name": "WHY THIS SECOND WORKFLOW IS ACTUALLY NECESSARY2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        352,
+        3648
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "razorpay/payment-webhook",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "8271b20c-221a-4451-ac8d-2d29c5b212ad",
+      "name": "Razorpay Payment Webhook2",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        496,
+        4112
+      ],
+      "webhookId": "04c143de-8456-4e2b-a257-673cd6a037a3"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst rawBuffer = $input.item.binary?.data ? Buffer.from($input.item.binary.data.data, 'base64') : Buffer.from('');\nconst rawString = rawBuffer.toString('utf8');\nconst sigHeader = $input.item.json.headers['x-razorpay-signature'] || '';\nconst digest = crypto.createHmac('sha256', $env.RAZORPAY_WEBHOOK_SECRET).update(rawBuffer).digest('hex');\nfunction timingSafeEqual(a, b) {\n  const bufA = Buffer.from(a); const bufB = Buffer.from(b);\n  if (bufA.length !== bufB.length) return false;\n  return crypto.timingSafeEqual(bufA, bufB);\n}\nconst valid = sigHeader.length > 0 && timingSafeEqual(sigHeader, digest);\nlet parsed = {};\ntry { parsed = JSON.parse(rawString); } catch (e) {}\nreturn { json: { valid, event: parsed.event, payload: parsed.payload } };"
+      },
+      "id": "3d763b78-51bc-4ef8-ae25-f776de7c8db4",
+      "name": "Verify Razorpay Signature2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        720,
+        4112
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "63eccee4-b1f5-4e06-a112-46024cbb93f7",
+      "name": "Signature Valid?3",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        928,
+        4112
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'invalid signature' } }}",
+        "options": {}
+      },
+      "id": "f98e3b6c-cfda-4507-b80b-2b39564e6146",
+      "name": "Reject (401)2",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        928,
+        4304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const headerEventId = $('Razorpay Payment Webhook2').item.json.headers?.['x-razorpay-event-id'] || null;\nreturn { json: { razorpay_event_id: headerEventId } };"
+      },
+      "id": "8faa455e-4951-4ab9-ad66-eb5efbd4d2db",
+      "name": "Extract Event ID2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [
+        928,
+        3936
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "374d7b4d-3da3-43fa-98fc-9c5e1a358631",
+      "name": "Event ID Present?2",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        3808
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: 'missing event id' } }}",
+        "options": {}
+      },
+      "id": "10701eac-72a2-4e5a-9da6-583ce2b5f3cf",
+      "name": "Respond 400 (Missing Event ID)2",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1376,
+        3744
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH inserted AS (\n  INSERT INTO cartrecovery.razorpay_webhook_events\n    (event_id, event_type)\n  VALUES ($1, $2)\n  ON CONFLICT (event_id) DO NOTHING\n  RETURNING id\n)\nSELECT\n  EXISTS (SELECT 1 FROM inserted) AS inserted;",
+        "options": {
+          "queryReplacement": "={{ [$json.razorpay_event_id, $('Verify Razorpay Signature2').item.json.event] }}"
+        }
+      },
+      "id": "f05bb98c-3879-4455-95e0-88b060e33f28",
+      "name": "Persist Razorpay Event (Idempotency)2",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1376,
+        3936
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'received' } }}",
+        "options": {}
+      },
+      "id": "df61ab8f-21dd-4ec9-981e-9b0ca7033b25",
+      "name": "Respond 200 (Immediate ACK)2",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        3936
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "38262a6d-9bf6-48f4-9723-5f77d0527f3e",
+      "name": "New Event (Not Duplicate)?2",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1808,
+        3936
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a5e47e2d-e181-4b25-8541-d0dbd30dcc1c",
+      "name": "Is Payment Link Paid Event?2",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2032,
+        3936
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH lookup AS (\n  SELECT\n    ra.id,\n    ra.status,\n    c.checkout_token,\n    c.line_items,\n    c.currency,\n    cu.email AS customer_email,\n    cu.phone_e164 AS customer_phone\n  FROM cartrecovery.recovery_attempts ra\n  JOIN cartrecovery.carts c ON c.id = ra.cart_id\n  JOIN cartrecovery.customers cu ON cu.id = ra.customer_id\n  WHERE ra.id = $1\n)\nSELECT\n  EXISTS(SELECT 1 FROM lookup) AS found,\n  (SELECT id FROM lookup LIMIT 1) AS id,\n  (SELECT status FROM lookup LIMIT 1) AS status,\n  (SELECT checkout_token FROM lookup LIMIT 1) AS checkout_token,\n  (SELECT line_items FROM lookup LIMIT 1) AS line_items,\n  (SELECT currency FROM lookup LIMIT 1) AS currency,\n  (SELECT customer_email FROM lookup LIMIT 1) AS customer_email,\n  (SELECT customer_phone FROM lookup LIMIT 1) AS customer_phone;",
+        "options": {
+          "queryReplacement": "={{ [$('Verify Razorpay Signature2').item.json.payload.payment_link.entity.reference_id] }}"
+        }
+      },
+      "id": "a98b419d-14cd-4439-ac6b-0a7ed8096dba",
+      "name": "Find Recovery Attempt By Reference2",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2256,
+        3936
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "3a099fe6-2189-472d-b244-807428132699",
+      "name": "Recovery Attempt Found?2",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2480,
+        3936
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.razorpay_webhook_events SET event_type = event_type || ':unmatched_reference' WHERE event_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Extract Event ID2').item.json.razorpay_event_id] }}"
+        }
+      },
+      "id": "90f07894-b3dc-46e3-81bd-d8f849cde9d9",
+      "name": "Log Unmatched Reference2",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2480,
+        4144
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "9db5cf49-4ce7-484b-b082-b688edfc457b",
+      "name": "Found & Not Already Recovered?2",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2688,
+        3936
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH updated AS (\n  UPDATE cartrecovery.payment_attempts\n  SET status = 'paid',\n      paid_at = now()\n  WHERE recovery_attempt_id = $1\n    AND provider_ref_id = $2\n  RETURNING id\n)\nSELECT\n  EXISTS(SELECT 1 FROM updated) AS updated,\n  (SELECT id FROM updated LIMIT 1) AS payment_attempt_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.id, $('Verify Razorpay Signature2').item.json.payload.payment_link.entity.id] }}"
+        }
+      },
+      "id": "23df8c82-580d-42d1-9700-f57fb9d01620",
+      "name": "Mark Payment Attempt Paid2",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2912,
+        3856
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "21198108-6fe7-4df5-8838-0f54b793a66b",
+      "name": "Payment Attempt Updated?2",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        3136,
+        3856
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'payment_attempt_mismatch', failure_reason = 'payment_attempt_mismatch_or_not_found', updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Found & Not Already Recovered?2').item.json.id] }}"
+        }
+      },
+      "id": "39c84096-779e-4b2e-837c-1aebdc807084",
+      "name": "Log Payment Attempt Mismatch2",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3136,
+        4048
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "url": "={{ $env.SHOPIFY_STORE_URL }}/admin/api/2026-01/checkouts/{{ $('Found & Not Already Recovered?2').item.json.checkout_token }}.json",
+        "options": {}
+      },
+      "id": "6c75e0e9-67cc-42ca-8a47-08ed6320c594",
+      "name": "Check If Shopify Order Already Exists2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        3360,
+        3856
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'payment_received_order_sync_pending', failure_reason = 'shopify_order_check_failed_after_payment', updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Found & Not Already Recovered?2').item.json.id] }}"
+        }
+      },
+      "id": "8889af82-bf40-409a-a0a8-f1f377268602",
+      "name": "Record Shopify Order Check Failure2",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3568,
+        3664
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "6c860c47-3e07-43c1-87b5-5914987d9fee",
+      "name": "Order Already Exists?2",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        3568,
+        3856
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET order_id_if_recovered = $2, status = 'recovered', recovered_at = now(), updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Found & Not Already Recovered?2').item.json.id, $json.checkout.order_id] }}"
+        }
+      },
+      "id": "4728e7f6-f894-406a-9098-36f47d9a9016",
+      "name": "Link Existing Order + Mark Recovered2",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3792,
+        3728
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "predefinedCredentialType",
+        "url": "={{ $env.SHOPIFY_STORE_URL }}/admin/api/2026-01/orders.json",
+        "options": {}
+      },
+      "id": "565b1703-4fc0-43a2-a6a1-6a29f86df922",
+      "name": "Create Shopify Order (Mark Paid)2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        3792,
+        3936
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {},
+      "id": "8e8b4648-e3d8-4b5c-ae61-e9276386ce77",
+      "name": "Shopify Order Created?2",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        4016,
+        3936
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET status = 'payment_received_order_sync_pending', failure_reason = 'shopify_order_sync_failed_after_payment', updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Found & Not Already Recovered?2').item.json.id] }}"
+        }
+      },
+      "id": "4043b349-f4b6-4988-8c6b-90b602e6e8dd",
+      "name": "Record Shopify Order Creation Failure2",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4240,
+        4096
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE cartrecovery.recovery_attempts SET order_id_if_recovered = $2, status = 'recovered', recovered_at = now(), updated_at = now() WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Found & Not Already Recovered?2').item.json.id, $json.order.id] }}"
+        }
+      },
+      "id": "3db44e8a-3452-419c-a777-e10164de56c8",
+      "name": "Store Order ID + Mark Recovered2",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4240,
+        3936
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "IhXIF8Pzx6HEDJWi",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Cart Abandoned Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify Shopify Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Shopify Signature": {
+      "main": [
+        [
+          {
+            "node": "Log Webhook Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Webhook Event": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?": {
+      "main": [
+        [
+          {
+            "node": "Normalize Cart + Customer Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject Invalid Signature (401)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Cart + Customer Data": {
+      "main": [
+        [
+          {
+            "node": "Validate Required Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Required Fields": {
+      "main": [
+        [
+          {
+            "node": "Fields Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fields Valid?": {
+      "main": [
+        [
+          {
+            "node": "Check Cart Idempotency",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400 (Invalid Fields)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Cart Idempotency": {
+      "main": [
+        [
+          {
+            "node": "New Cart?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New Cart?": {
+      "main": [
+        [
+          {
+            "node": "Upsert Customer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 200 (Duplicate, Ignored)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Customer": {
+      "main": [
+        [
+          {
+            "node": "Insert Cart",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert Cart": {
+      "main": [
+        [
+          {
+            "node": "Create Recovery Attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Recovery Attempt": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 Accepted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 200 Accepted": {
+      "main": [
+        [
+          {
+            "node": "Wait 15 Minutes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Check Order Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Order Status": {
+      "main": [
+        [
+          {
+            "node": "Already Purchased?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Purchased?": {
+      "main": [
+        [
+          {
+            "node": "Mark Recovered (Purchased Before First Touch)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check WhatsApp Eligibility",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check WhatsApp Eligibility": {
+      "main": [
+        [
+          {
+            "node": "Eligible?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Eligible?": {
+      "main": [
+        [
+          {
+            "node": "Eligible? (branch)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Eligible? (branch)": {
+      "main": [
+        [
+          {
+            "node": "Branch Payment Method",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Ineligible / Suppressed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Branch Payment Method": {
+      "main": [
+        [
+          {
+            "node": "Build COD Recovery Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Razorpay Payment Link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Razorpay Payment Link": {
+      "main": [
+        [
+          {
+            "node": "Record Payment Attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record Payment Attempt": {
+      "main": [
+        [
+          {
+            "node": "Fetch Product Image (Primary Line Item)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Product Image (Primary Line Item)": {
+      "main": [
+        [
+          {
+            "node": "Build Payment Recovery Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Payment Recovery Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp First Touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build COD Recovery Message": {
+      "main": [
+        [
+          {
+            "node": "Fetch Product Image (COD)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Product Image (COD)": {
+      "main": [
+        [
+          {
+            "node": "Merge Image Into COD Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Image Into COD Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp First Touch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp First Touch": {
+      "main": [
+        [
+          {
+            "node": "Mark First Touch Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark First Touch Sent": {
+      "main": [
+        [
+          {
+            "node": "Wait 4 Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Re-check Order Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-check Order Status": {
+      "main": [
+        [
+          {
+            "node": "Purchased? (2nd check)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Purchased? (2nd check)": {
+      "main": [
+        [
+          {
+            "node": "Mark Recovered",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Coupon Enabled For This Method?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Coupon Enabled For This Method?": {
+      "main": [
+        [
+          {
+            "node": "Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enabled?": {
+      "main": [
+        [
+          {
+            "node": "Check Existing Coupon",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Closed (No Coupon Configured)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Existing Coupon": {
+      "main": [
+        [
+          {
+            "node": "Coupon Already Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Coupon Already Exists?": {
+      "main": [
+        [
+          {
+            "node": "Reuse Existing Coupon",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Shopify Discount Code (GraphQL, 5% off)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reuse Existing Coupon": {
+      "main": [
+        [
+          {
+            "node": "Send Coupon WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Shopify Discount Code (GraphQL, 5% off)": {
+      "main": [
+        [
+          {
+            "node": "Discount Created (No Errors)?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Discount Created (No Errors)?": {
+      "main": [
+        [
+          {
+            "node": "Store Coupon Offer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Coupon Creation Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Coupon Offer": {
+      "main": [
+        [
+          {
+            "node": "Build Coupon Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Coupon Message": {
+      "main": [
+        [
+          {
+            "node": "Send Coupon WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Coupon WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Mark Coupon Sent (Final State)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Razorpay Payment Webhook2": {
+      "main": [
+        [
+          {
+            "node": "Verify Razorpay Signature2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Razorpay Signature2": {
+      "main": [
+        [
+          {
+            "node": "Signature Valid?3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature Valid?3": {
+      "main": [
+        [
+          {
+            "node": "Extract Event ID2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject (401)2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Event ID2": {
+      "main": [
+        [
+          {
+            "node": "Event ID Present?2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Event ID Present?2": {
+      "main": [
+        [
+          {
+            "node": "Persist Razorpay Event (Idempotency)2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 400 (Missing Event ID)2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persist Razorpay Event (Idempotency)2": {
+      "main": [
+        [
+          {
+            "node": "Respond 200 (Immediate ACK)2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond 200 (Immediate ACK)2": {
+      "main": [
+        [
+          {
+            "node": "New Event (Not Duplicate)?2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New Event (Not Duplicate)?2": {
+      "main": [
+        [
+          {
+            "node": "Is Payment Link Paid Event?2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Payment Link Paid Event?2": {
+      "main": [
+        [
+          {
+            "node": "Find Recovery Attempt By Reference2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Recovery Attempt By Reference2": {
+      "main": [
+        [
+          {
+            "node": "Recovery Attempt Found?2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recovery Attempt Found?2": {
+      "main": [
+        [
+          {
+            "node": "Found & Not Already Recovered?2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Unmatched Reference2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Found & Not Already Recovered?2": {
+      "main": [
+        [
+          {
+            "node": "Mark Payment Attempt Paid2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Payment Attempt Paid2": {
+      "main": [
+        [
+          {
+            "node": "Payment Attempt Updated?2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payment Attempt Updated?2": {
+      "main": [
+        [
+          {
+            "node": "Check If Shopify Order Already Exists2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Payment Attempt Mismatch2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Shopify Order Already Exists2": {
+      "main": [
+        [
+          {
+            "node": "Order Already Exists?2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Shopify Order Check Failure2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order Already Exists?2": {
+      "main": [
+        [
+          {
+            "node": "Link Existing Order + Mark Recovered2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Shopify Order (Mark Paid)2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Shopify Order (Mark Paid)2": {
+      "main": [
+        [
+          {
+            "node": "Shopify Order Created?2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Shopify Order Creation Failure2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shopify Order Created?2": {
+      "main": [
+        [
+          {
+            "node": "Store Order ID + Mark Recovered2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record Shopify Order Creation Failure2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "164cedde-d8e5-41d2-ab1d-436d01e0eee0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "ab782a197a34b627a970462134e9e8786494badc720390c65408c52487825c6c"
+  },
+  "nodeGroups": [],
+  "id": "B9bVuomvCMVOb0gN",
+  "tags": []
+}
